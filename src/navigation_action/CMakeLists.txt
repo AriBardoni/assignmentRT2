@@ -17,7 +17,7 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
-# Generate the action
+# Generate the action (QUESTO DEVE VENIRE PRIMA!)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/Navigate.action"
   DEPENDENCIES geometry_msgs
@@ -33,6 +33,11 @@ ament_target_dependencies(robot_broadcaster_component
   tf2_ros
   geometry_msgs
   nav_msgs
+)
+# Aggiunge dipendenza dall'action (se necessario, ma broadcaster non usa l'action)
+target_include_directories(robot_broadcaster_component PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
 )
 rclcpp_components_register_node(robot_broadcaster_component
   PLUGIN "navigation_action::RobotBroadcaster"
@@ -51,18 +56,30 @@ ament_target_dependencies(navigation_server_component
   tf2_geometry_msgs
   geometry_msgs
 )
+# ESPLICITA la dipendenza dall'action generata
+add_dependencies(navigation_server_component ${PROJECT_NAME}_generate_messages_cpp)
+target_include_directories(navigation_server_component PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
 rclcpp_components_register_node(navigation_server_component
   PLUGIN "navigation_action::NavigationServer"
   EXECUTABLE navigation_server_exe
 )
 
-# === Executable: UI Client (non componente, per interazione console) ===
+# === Executable: UI Client (non componente) ===
 add_executable(navigation_ui_client
   src/navigation_ui_client.cpp
 )
 ament_target_dependencies(navigation_ui_client
   rclcpp
   rclcpp_action
+)
+# ESPLICITA la dipendenza dall'action generata
+add_dependencies(navigation_ui_client ${PROJECT_NAME}_generate_messages_cpp)
+target_include_directories(navigation_ui_client PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
 )
 
 # Install libraries and executables
