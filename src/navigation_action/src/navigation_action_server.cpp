@@ -124,7 +124,7 @@ private:
             
             try {
                 auto transform = tf_buffer_->lookupTransform(
-                    "base_footprint", "odom", tf2::TimePointZero);
+                "odom", "base_footprint", tf2::TimePointZero);
                 
                 double current_x = transform.transform.translation.x;
                 double current_y = transform.transform.translation.y;
