@@ -6,14 +6,16 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
+#include "tf2/utils.h"
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/buffer.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "tf2/LinearMath/Quaternion.h"
 
 #include "navigation_action/action/navigate.hpp"
-
 using Navigate = navigation_action::action::Navigate;
+
 using GoalHandleNavigate = rclcpp_action::ServerGoalHandle<Navigate>;
 
 namespace navigation_action
@@ -128,7 +130,7 @@ private:
                 double current_y = transform.transform.translation.y;
                 
                 // Estrai yaw dalla quaternione
-                double current_yaw = tf2_geometry_msgs::getYaw(transform.transform.rotation);                
+                double current_yaw = tf2::getYaw(transform.transform.rotation);
                 double dx = goal_x_ - current_x;
                 double dy = goal_y_ - current_y;
                 double distance = std::sqrt(dx*dx + dy*dy);
