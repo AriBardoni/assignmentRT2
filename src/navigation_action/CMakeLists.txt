@@ -23,20 +23,20 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   DEPENDENCIES geometry_msgs
 )
 
-# === Component 1: Gazebo Broadcaster (TF2) ===
-add_library(gazebo_broadcaster_component SHARED
-  src/navigation_gazebo_broadcaster.cpp
+# === Component 1: Robot Broadcaster (TF2) ===
+add_library(robot_broadcaster_component SHARED
+  src/robot_broadcaster.cpp
 )
-ament_target_dependencies(gazebo_broadcaster_component
+ament_target_dependencies(robot_broadcaster_component
   rclcpp
   rclcpp_components
   tf2_ros
   geometry_msgs
   nav_msgs
 )
-rclcpp_components_register_node(gazebo_broadcaster_component
-  PLUGIN "navigation_action::GazeboBroadcaster"
-  EXECUTABLE gazebo_broadcaster_exe
+rclcpp_components_register_node(robot_broadcaster_component
+  PLUGIN "navigation_action::RobotBroadcaster"
+  EXECUTABLE robot_broadcaster_exe
 )
 
 # === Component 2: Action Server ===
@@ -67,7 +67,7 @@ ament_target_dependencies(navigation_ui_client
 
 # Install libraries and executables
 install(TARGETS
-  gazebo_broadcaster_component
+  robot_broadcaster_component
   navigation_server_component
   navigation_ui_client
   ARCHIVE DESTINATION lib

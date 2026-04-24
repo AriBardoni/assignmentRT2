@@ -21,7 +21,7 @@ public:
                 geometry_msgs::msg::TransformStamped t;
                 t.header.stamp = msg->header.stamp;
                 t.header.frame_id = "odom";
-                t.child_frame_id = "base_footprint";  // o "link_chassis"
+                t.child_frame_id = "base_footprint";
                 t.transform.translation.x = msg->pose.pose.position.x;
                 t.transform.translation.y = msg->pose.pose.position.y;
                 t.transform.translation.z = msg->pose.pose.position.z;
