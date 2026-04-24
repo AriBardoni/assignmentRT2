@@ -1,6 +1,7 @@
 #include <memory>
 #include <thread>
 #include <cmath>
+#include <functional>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
@@ -24,27 +25,30 @@ public:
     NavigationServer(const rclcpp::NodeOptions & options)
     : Node("navigation_action_server", options)
     {
-        // === Action Server ===
+        // Action server
         action_server_ = rclcpp_action::create_server<Navigate>(
             this,
             "navigate",
-            std::bind(&NavigationServer::handle_goal, this, _1, _2),
-            std::bind(&NavigationServer::handle_cancel, this, _1),
-            std::bind(&NavigationServer::handle_accepted, this, _1));
+            std::bind(&NavigationServer::handle_goal, this, 
+                      std::placeholders::_1, std::placeholders::_2),
+            std::bind(&NavigationServer::handle_cancel, this,
+                      std::placeholders::_1),
+            std::bind(&NavigationServer::handle_accepted, this,
+                      std::placeholders::_1));
         
-        // === TF2 Buffer e Listener (per leggere posizione del robot) ===
+        // TF2 Buffer e Listener
         tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
         
-        // === Publisher per i comandi di velocità ===
+        // Publisher per cmd_vel
         cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
         
-        // === Parametri di controllo (come nel go_to_point.py) ===
-        this->declare_parameter("yaw_precision", M_PI / 9.0);      // 20 gradi
-        this->declare_parameter("yaw_precision_2", M_PI / 90.0);   // 2 gradi
-        this->declare_parameter("dist_precision", 0.1);            // 10 cm
-        this->declare_parameter("kp_a", -3.0);                     // gain angolare
-        this->declare_parameter("linear_speed", 0.3);              // velocità lineare
+        // Parametri
+        this->declare_parameter("yaw_precision", M_PI / 9.0);
+        this->declare_parameter("yaw_precision_2", M_PI / 90.0);
+        this->declare_parameter("dist_precision", 0.1);
+        this->declare_parameter("kp_a", -3.0);
+        this->declare_parameter("linear_speed", 0.3);
         
         RCLCPP_INFO(get_logger(), "Navigation Action Server started");
     }
@@ -55,10 +59,8 @@ private:
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
     
-    // Goal corrente
     double goal_x_, goal_y_, goal_theta_;
     
-    // Normalizza angolo tra -PI e PI
     double normalize_angle(double angle)
     {
         while (angle > M_PI) angle -= 2 * M_PI;
@@ -66,22 +68,18 @@ private:
         return angle;
     }
     
-    // Callback: ricezione goal
     rclcpp_action::GoalResponse handle_goal(
         const rclcpp_action::GoalUUID &,
         std::shared_ptr<const Navigate::Goal> goal)
     {
         RCLCPP_INFO(get_logger(), "Goal: x=%.2f y=%.2f theta=%.2f",
                     goal->x, goal->y, goal->theta);
-        
         goal_x_ = goal->x;
         goal_y_ = goal->y;
         goal_theta_ = goal->theta;
-        
         return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
     }
     
-    // Callback: cancellazione
     rclcpp_action::CancelResponse handle_cancel(
         const std::shared_ptr<GoalHandleNavigate>)
     {
@@ -89,20 +87,17 @@ private:
         return rclcpp_action::CancelResponse::ACCEPT;
     }
     
-    // Callback: goal accettato (parte thread separato)
     void handle_accepted(const std::shared_ptr<GoalHandleNavigate> goal_handle)
     {
         std::thread{std::bind(&NavigationServer::execute, this, goal_handle)}.detach();
     }
     
-    // === ESECUZIONE PRINCIPALE (STATE MACHINE) ===
     void execute(const std::shared_ptr<GoalHandleNavigate> goal_handle)
     {
         auto feedback = std::make_shared<Navigate::Feedback>();
         auto result = std::make_shared<Navigate::Result>();
         
-        // Stati: 0=FIX_YAW, 1=GO_STRAIGHT, 2=FIX_FINAL_YAW, 3=DONE
-        int state = 0;
+        int state = 0; // 0=FIX_YAW, 1=GO_STRAIGHT, 2=FIX_FINAL_YAW, 3=DONE
         
         double yaw_precision = this->get_parameter("yaw_precision").as_double();
         double yaw_precision_2 = this->get_parameter("yaw_precision_2").as_double();
@@ -110,18 +105,15 @@ private:
         double kp_a = this->get_parameter("kp_a").as_double();
         double linear_speed = this->get_parameter("linear_speed").as_double();
         
-        rclcpp::Rate rate(20);  // 20 Hz come nel go_to_point.py
+        rclcpp::Rate rate(20);
         
         while (rclcpp::ok() && state != 3)
         {
-            // Controlla cancellazione
             if (goal_handle->is_canceling())
             {
                 result->success = false;
                 result->message = "Cancelled by user";
                 goal_handle->canceled(result);
-                
-                // Ferma il robot
                 cmd_vel_pub_->publish(geometry_msgs::msg::Twist());
                 return;
             }
@@ -129,15 +121,14 @@ private:
             geometry_msgs::msg::Twist cmd_vel;
             
             try {
-                // Ottieni posizione corrente del robot tramite TF2 (odom -> base_footprint)
                 auto transform = tf_buffer_->lookupTransform(
                     "base_footprint", "odom", tf2::TimePointZero);
                 
                 double current_x = transform.transform.translation.x;
                 double current_y = transform.transform.translation.y;
-                double current_yaw = tf2::getYaw(transform.transform.rotation);
                 
-                // Calcola errori
+                // Estrai yaw dalla quaternione
+                double current_yaw = tf2_geometry_msgs::getYaw(transform.transform.rotation);                
                 double dx = goal_x_ - current_x;
                 double dy = goal_y_ - current_y;
                 double distance = std::sqrt(dx*dx + dy*dy);
@@ -145,24 +136,20 @@ private:
                 double yaw_error = normalize_angle(angle_to_goal - current_yaw);
                 double final_yaw_error = normalize_angle(goal_theta_ - current_yaw);
                 
-                // Feedback per il client
                 feedback->remaining_distance = distance;
                 feedback->remaining_angle = yaw_error;
                 feedback->state = state;
                 goal_handle->publish_feedback(feedback);
                 
-                // LOG ogni secondo (throttle)
                 RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
                     "State %d: dist=%.2f yaw_err=%.2f", state, distance, yaw_error);
                 
-                // === STATE MACHINE (come go_to_point.py) ===
                 switch (state)
                 {
                     case 0: // FIX_YAW
                         if (std::fabs(yaw_error) > yaw_precision_2)
                         {
                             cmd_vel.angular.z = kp_a * yaw_error;
-                            // Limiti
                             if (cmd_vel.angular.z > 0.6) cmd_vel.angular.z = 0.6;
                             if (cmd_vel.angular.z < -0.5) cmd_vel.angular.z = -0.5;
                         }
@@ -187,7 +174,7 @@ private:
                         else
                         {
                             cmd_vel.linear.x = linear_speed;
-                            cmd_vel.angular.z = kp_a * 0.3 * yaw_error;  // correzione dolce
+                            cmd_vel.angular.z = kp_a * 0.3 * yaw_error;
                         }
                         break;
                         
@@ -210,13 +197,12 @@ private:
                 
             } catch (const tf2::TransformException & ex) {
                 RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
-                    "TF2 lookup error: %s", ex.what());
+                    "TF2 error: %s", ex.what());
             }
             
             rate.sleep();
         }
         
-        // Ferma il robot
         cmd_vel_pub_->publish(geometry_msgs::msg::Twist());
         
         if (rclcpp::ok() && !goal_handle->is_canceling())

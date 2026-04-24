@@ -5,8 +5,9 @@ float64 theta
 ---
 # RESULT
 bool success
+string message
 ---
 # FEEDBACK
-float64 current_x
-float64 current_y
-float64 current_theta 
+float64 remaining_distance
+float64 remaining_angle
+int32 state
