@@ -1,4 +1,4 @@
-Research Track 2 – Assignment 2
+Research Track 2 – Assignment 1
 
 The project implements a ROS2 Action-based navigation system for a mobile robot in Gazebo simulation.
 
