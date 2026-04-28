@@ -1,21 +1,19 @@
-/*#include <memory>
+#include <memory>
 #include <thread>
+#include <chrono>
 #include <cmath>
-#include <functional>
+#include <atomic>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
-#include "tf2/utils.h"
-#include "tf2_ros/transform_listener.h"
-#include "tf2_ros/buffer.h"
-#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+
 #include "geometry_msgs/msg/twist.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+#include "tf2/LinearMath/Quaternion.h"
+#include "tf2/LinearMath/Matrix3x3.h"
 
 #include "navigation_action/action/navigate.hpp"
-
-using Navigate = navigation_action::action::Navigate;
-using GoalHandleNavigate = rclcpp_action::ServerGoalHandle<Navigate>;
 
 namespace navigation_action
 {
@@ -23,54 +21,76 @@ namespace navigation_action
 class NavigationServer : public rclcpp::Node
 {
 public:
-    NavigationServer(const rclcpp::NodeOptions & options)
-    : Node("navigation_action_server", options)
+    using Navigate = navigation_action::action::Navigate;
+    using GoalHandleNavigate = rclcpp_action::ServerGoalHandle<Navigate>;
+
+    explicit NavigationServer(const rclcpp::NodeOptions & options)
+    : Node("navigation_server", options)
     {
+        cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
+
+        odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+            "/odom", 10,
+            std::bind(&NavigationServer::odom_callback, this, std::placeholders::_1)
+        );
+
         action_server_ = rclcpp_action::create_server<Navigate>(
             this,
             "navigate",
-            std::bind(&NavigationServer::handle_goal, this,
+            std::bind(&NavigationServer::handle_goal, this, 
                       std::placeholders::_1, std::placeholders::_2),
-            std::bind(&NavigationServer::handle_cancel, this,
+            std::bind(&NavigationServer::handle_cancel, this, 
                       std::placeholders::_1),
-            std::bind(&NavigationServer::handle_accepted, this,
-                      std::placeholders::_1));
+            std::bind(&NavigationServer::handle_accepted, this, 
+                      std::placeholders::_1)
+        );
 
-        tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
-        tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-
-        cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
-
-        this->declare_parameter("yaw_precision", M_PI / 9.0);
-        this->declare_parameter("yaw_precision_2", M_PI / 18.0);
-        this->declare_parameter("dist_precision", 0.1);
-        this->declare_parameter("kp_a", -3.0);
-        this->declare_parameter("linear_speed", 0.3);
-
-        RCLCPP_INFO(get_logger(), "Navigation Action Server started");
+        RCLCPP_INFO(this->get_logger(), "NavigationServer ready");
     }
 
 private:
     rclcpp_action::Server<Navigate>::SharedPtr action_server_;
-    std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
-    std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+    std::shared_ptr<GoalHandleNavigate> current_goal_handle_;
+    std::atomic<bool> running_{false};
+
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+    double current_x_ = 0.0;
+    double current_y_ = 0.0;
+    double current_yaw_ = 0.0;
+
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
 
-    double goal_x_{0.0}, goal_y_{0.0}, goal_theta_{0.0};
+    // Goal da raggiungere
+    double goal_x_ = 0.0;
+    double goal_y_ = 0.0;
+    double goal_theta_ = 0.0;
 
-    double normalize_angle(double angle)
+    void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
     {
-        while (angle > M_PI) angle -= 2 * M_PI;
-        while (angle < -M_PI) angle += 2 * M_PI;
-        return angle;
+        current_x_ = msg->pose.pose.position.x;
+        current_y_ = msg->pose.pose.position.y;
+
+        tf2::Quaternion q(
+            msg->pose.pose.orientation.x,
+            msg->pose.pose.orientation.y,
+            msg->pose.pose.orientation.z,
+            msg->pose.pose.orientation.w
+        );
+
+        double roll, pitch, yaw;
+        tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
+        current_yaw_ = yaw;
     }
 
     rclcpp_action::GoalResponse handle_goal(
-        const rclcpp_action::GoalUUID &,
+        const rclcpp_action::GoalUUID & uuid,
         std::shared_ptr<const Navigate::Goal> goal)
     {
-        RCLCPP_INFO(get_logger(), "Goal: x=%.2f y=%.2f theta=%.2f",
-                    goal->x, goal->y, goal->theta);
+        (void)uuid;
+
+        RCLCPP_INFO(this->get_logger(),
+            "Goal received: x=%.2f y=%.2f theta=%.2f",
+            goal->x, goal->y, goal->theta);
 
         goal_x_ = goal->x;
         goal_y_ = goal->y;
@@ -80,15 +100,32 @@ private:
     }
 
     rclcpp_action::CancelResponse handle_cancel(
-        const std::shared_ptr<GoalHandleNavigate>)
+        const std::shared_ptr<GoalHandleNavigate> goal_handle)
     {
-        RCLCPP_WARN(get_logger(), "Cancel requested");
+        (void)goal_handle;
+        RCLCPP_INFO(this->get_logger(), "Cancel request");
+        running_ = false;
+        
+        geometry_msgs::msg::Twist stop;
+        cmd_vel_pub_->publish(stop);
+        
         return rclcpp_action::CancelResponse::ACCEPT;
     }
 
     void handle_accepted(const std::shared_ptr<GoalHandleNavigate> goal_handle)
     {
-        std::thread{std::bind(&NavigationServer::execute, this, goal_handle)}.detach();
+        running_ = false;
+        
+        geometry_msgs::msg::Twist stop;
+        cmd_vel_pub_->publish(stop);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        current_goal_handle_ = goal_handle;
+        running_ = true;
+
+        std::thread{
+            std::bind(&NavigationServer::execute, this, goal_handle)
+        }.detach();
     }
 
     void execute(const std::shared_ptr<GoalHandleNavigate> goal_handle)
@@ -96,328 +133,90 @@ private:
         auto feedback = std::make_shared<Navigate::Feedback>();
         auto result = std::make_shared<Navigate::Result>();
 
-        int state = 0;
-
-        const double yaw_precision = this->get_parameter("yaw_precision").as_double();
-        const double yaw_precision_2 = this->get_parameter("yaw_precision_2").as_double();
-        const double dist_precision = this->get_parameter("dist_precision").as_double();
-        const double kp_a = this->get_parameter("kp_a").as_double();
-        const double linear_speed = this->get_parameter("linear_speed").as_double();
-
         rclcpp::Rate rate(20);
 
-        while (rclcpp::ok() && state != 3)
+        while (rclcpp::ok() && running_)
         {
             if (goal_handle->is_canceling())
             {
+                running_ = false;
                 geometry_msgs::msg::Twist stop;
                 cmd_vel_pub_->publish(stop);
-
                 result->success = false;
                 result->message = "Cancelled";
                 goal_handle->canceled(result);
                 return;
             }
 
-            geometry_msgs::msg::Twist cmd_vel;
+            double dx = goal_x_ - current_x_;
+            double dy = goal_y_ - current_y_;
+            double distance = std::sqrt(dx*dx + dy*dy);
 
-            try {
-                auto transform = tf_buffer_->lookupTransform(
-                    "odom", "base_footprint", tf2::TimePointZero);
+            // Feedback
+            feedback->remaining_distance = distance;
+            double angle_to_goal = std::atan2(dy, dx);
+            double yaw_error = angle_to_goal - current_yaw_;
+            while (yaw_error > M_PI) yaw_error -= 2 * M_PI;
+            while (yaw_error < -M_PI) yaw_error += 2 * M_PI;
+            feedback->remaining_angle = yaw_error;
+            feedback->state = (distance < 0.1) ? 2 : (std::abs(yaw_error) > 0.1 ? 0 : 1);
+            goal_handle->publish_feedback(feedback);
 
-                double current_x = transform.transform.translation.x;
-                double current_y = transform.transform.translation.y;
-                double current_yaw = tf2::getYaw(transform.transform.rotation);
+            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+                "dist=%.2f yaw_err=%.2f", distance, yaw_error);
 
-                double dx = goal_x_ - current_x;
-                double dy = goal_y_ - current_y;
+            geometry_msgs::msg::Twist cmd;
 
-                double distance = std::sqrt(dx*dx + dy*dy);
-                double angle_to_goal = std::atan2(dy, dx);
-                double yaw_error = normalize_angle(angle_to_goal - current_yaw);
-                double final_yaw_error = normalize_angle(goal_theta_ - current_yaw);
+            // Se abbiamo raggiunto il punto (distanza < 10cm)
+            if (distance < 0.1)
+            {
+                // Allineamento finale all'orientamento desiderato
+                double final_yaw_error = goal_theta_ - current_yaw_;
+                while (final_yaw_error > M_PI) final_yaw_error -= 2 * M_PI;
+                while (final_yaw_error < -M_PI) final_yaw_error += 2 * M_PI;
 
-                feedback->remaining_distance = distance;
-                feedback->remaining_angle = yaw_error;
-                feedback->state = state;
-                goal_handle->publish_feedback(feedback);
-
-                switch (state)
+                if (std::abs(final_yaw_error) > 0.05)
                 {
-                    case 0:
-                        cmd_vel.linear.x = 0.0;
-                        if (std::fabs(yaw_error) > yaw_precision)
-                        {
-                            cmd_vel.angular.z = kp_a * yaw_error;
-                            cmd_vel.angular.z = std::clamp(cmd_vel.angular.z, -0.5, 0.6);
-                        }
-                        else
-                        {
-                            state = 1;
-                        }
-                        break;
-
-                    case 1:
-                        if (distance <= dist_precision)
-                        {
-                            cmd_vel.linear.x = 0.0;
-                            cmd_vel.angular.z = 0.0;
-                            cmd_vel_pub_->publish(cmd_vel);
-
-                            state = 2;
-                            RCLCPP_INFO(get_logger(), "Distance reached -> FIX_FINAL_YAW");
-                        }
-                        else if (std::fabs(yaw_error) > yaw_precision)
-                        {
-                            state = 0;
-                        }
-                        else
-                        {
-                            cmd_vel.linear.x = linear_speed;
-                            cmd_vel.angular.z = kp_a * 0.3 * yaw_error;
-                        }
-                        break;
-
-                    case 2:
-                        if (std::fabs(final_yaw_error) > yaw_precision_2)
-                        {
-                            cmd_vel.angular.z = kp_a * final_yaw_error;
-                            cmd_vel.angular.z = std::clamp(cmd_vel.angular.z, -0.5, 0.6);
-                        }
-                        else
-                        {
-                            state = 3;
-                        }
-                        break;
+                    cmd.angular.z = std::clamp(1.5 * final_yaw_error, -0.5, 0.5);
+                    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500,
+                        "Final alignment: error=%.2f", final_yaw_error);
                 }
+                else
+                {
+                    // Fatto!
+                    cmd_vel_pub_->publish(geometry_msgs::msg::Twist());
+                    if (running_)
+                    {
+                        result->success = true;
+                        result->message = "Goal reached";
+                        goal_handle->succeed(result);
+                    }
+                    running_ = false;
+                    return;
+                }
+            }
+            else
+            {
+                // Movimento verso il goal
+                double angle_to_goal = std::atan2(dy, dx);
+                double yaw_error = angle_to_goal - current_yaw_;
+                while (yaw_error > M_PI) yaw_error -= 2 * M_PI;
+                while (yaw_error < -M_PI) yaw_error += 2 * M_PI;
 
-                cmd_vel_pub_->publish(cmd_vel);
-
-            } catch (const tf2::TransformException & ex) {
-                RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
-                    "TF error: %s", ex.what());
+                // Controllo proporzionale
+                cmd.linear.x = std::clamp(0.5 * distance, -0.3, 0.3);
+                cmd.angular.z = std::clamp(1.2 * yaw_error, -0.8, 0.8);
             }
 
+            cmd_vel_pub_->publish(cmd);
             rate.sleep();
         }
 
-        cmd_vel_pub_->publish(geometry_msgs::msg::Twist());
-
-        result->success = true;
-        result->message = "Goal reached";
-        goal_handle->succeed(result);
+        geometry_msgs::msg::Twist stop;
+        cmd_vel_pub_->publish(stop);
     }
 };
 
 } // namespace navigation_action
-
-RCLCPP_COMPONENTS_REGISTER_NODE(navigation_action::NavigationServer)
-*/
-
-#include <memory>
-#include <thread>
-#include <cmath>
-#include <functional>
-#include <algorithm>
-
-#include "rclcpp/rclcpp.hpp"
-#include "rclcpp_action/rclcpp_action.hpp"
-#include "rclcpp_components/register_node_macro.hpp"
-#include "tf2/utils.h"
-#include "tf2_ros/transform_listener.h"
-#include "tf2_ros/buffer.h"
-#include "geometry_msgs/msg/twist.hpp"
-
-#include "navigation_action/action/navigate.hpp"
-
-using Navigate = navigation_action::action::Navigate;
-using GoalHandleNavigate = rclcpp_action::ServerGoalHandle<Navigate>;
-
-namespace navigation_action
-{
-
-class NavigationServer : public rclcpp::Node
-{
-public:
-    NavigationServer(const rclcpp::NodeOptions & options)
-    : Node("navigation_action_server", options)
-    {
-        action_server_ = rclcpp_action::create_server<Navigate>(
-            this,
-            "navigate",
-            std::bind(&NavigationServer::handle_goal, this,
-                      std::placeholders::_1, std::placeholders::_2),
-            std::bind(&NavigationServer::handle_cancel, this,
-                      std::placeholders::_1),
-            std::bind(&NavigationServer::handle_accepted, this,
-                      std::placeholders::_1));
-
-        tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
-        tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-
-        cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
-
-        // FIX PARAMETRI (gain positivo!)
-        this->declare_parameter("yaw_precision", 0.15);
-        this->declare_parameter("yaw_precision_2", 0.08);
-        this->declare_parameter("dist_precision", 0.20);
-        this->declare_parameter("kp_a", 2.0);
-        this->declare_parameter("linear_speed", 0.2);
-
-        RCLCPP_INFO(get_logger(), "Navigation Action Server started");
-    }
-
-private:
-    rclcpp_action::Server<Navigate>::SharedPtr action_server_;
-    std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
-    std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
-    rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
-
-    double goal_x_{0.0}, goal_y_{0.0}, goal_theta_{0.0};
-
-    double normalize_angle(double angle)
-    {
-        while (angle > M_PI) angle -= 2 * M_PI;
-        while (angle < -M_PI) angle += 2 * M_PI;
-        return angle;
-    }
-
-    rclcpp_action::GoalResponse handle_goal(
-        const rclcpp_action::GoalUUID &,
-        std::shared_ptr<const Navigate::Goal> goal)
-    {
-        RCLCPP_INFO(get_logger(), "Goal: x=%.2f y=%.2f theta=%.2f",
-                    goal->x, goal->y, goal->theta);
-
-        goal_x_ = goal->x;
-        goal_y_ = goal->y;
-        goal_theta_ = goal->theta;
-
-        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
-    }
-
-    rclcpp_action::CancelResponse handle_cancel(
-        const std::shared_ptr<GoalHandleNavigate>)
-    {
-        RCLCPP_WARN(get_logger(), "Cancel requested");
-        return rclcpp_action::CancelResponse::ACCEPT;
-    }
-
-    void handle_accepted(const std::shared_ptr<GoalHandleNavigate> goal_handle)
-    {
-        std::thread{std::bind(&NavigationServer::execute, this, goal_handle)}.detach();
-    }
-
-    void execute(const std::shared_ptr<GoalHandleNavigate> goal_handle)
-    {
-        auto feedback = std::make_shared<Navigate::Feedback>();
-        auto result = std::make_shared<Navigate::Result>();
-
-        int state = 0;
-
-        const double yaw_precision = get_parameter("yaw_precision").as_double();
-        const double yaw_precision_2 = get_parameter("yaw_precision_2").as_double();
-        const double dist_precision = get_parameter("dist_precision").as_double();
-        const double kp_a = get_parameter("kp_a").as_double();
-        const double linear_speed = get_parameter("linear_speed").as_double();
-
-        rclcpp::Rate rate(20);
-
-        while (rclcpp::ok() && state != 3)
-        {
-            if (goal_handle->is_canceling())
-            {
-                cmd_vel_pub_->publish(geometry_msgs::msg::Twist());
-                result->success = false;
-                result->message = "Cancelled";
-                goal_handle->canceled(result);
-                return;
-            }
-
-            geometry_msgs::msg::Twist cmd_vel;
-
-            try {
-                auto transform = tf_buffer_->lookupTransform(
-                    "odom", "base_footprint", tf2::TimePointZero);
-
-                double x = transform.transform.translation.x;
-                double y = transform.transform.translation.y;
-                double yaw = tf2::getYaw(transform.transform.rotation);
-
-                double dx = goal_x_ - x;
-                double dy = goal_y_ - y;
-
-                double distance = std::hypot(dx, dy);
-                double target_angle = std::atan2(dy, dx);
-
-                double yaw_error = normalize_angle(target_angle - yaw);
-                double final_yaw_error = normalize_angle(goal_theta_ - yaw);
-
-                feedback->remaining_distance = distance;
-                feedback->remaining_angle = yaw_error;
-                feedback->state = state;
-                goal_handle->publish_feedback(feedback);
-
-                // ---------------- STATE MACHINE ----------------
-
-                if (state == 0)
-                {
-                    cmd_vel.linear.x = 0.0;
-
-                    if (std::fabs(yaw_error) > yaw_precision)
-                    {
-                        cmd_vel.angular.z = kp_a * yaw_error;
-                        cmd_vel.angular.z = std::clamp(cmd_vel.angular.z, -0.4, 0.4);
-                    }
-                    else
-                    {
-                        state = 1;
-                    }
-                }
-                else if (state == 1)
-                {
-                    if (distance <= dist_precision)
-                    {
-                        state = 2;
-                    }
-                    else
-                    {
-                        cmd_vel.linear.x = linear_speed * std::max(0.0, std::cos(yaw_error));
-                        cmd_vel.angular.z = kp_a * yaw_error;
-                        cmd_vel.angular.z = std::clamp(cmd_vel.angular.z, -0.4, 0.4);
-                    }
-                }
-                else if (state == 2)
-                {
-                    if (std::fabs(final_yaw_error) > yaw_precision_2)
-                    {
-                        cmd_vel.angular.z = kp_a * final_yaw_error;
-                        cmd_vel.angular.z = std::clamp(cmd_vel.angular.z, -0.4, 0.4);
-                    }
-                    else
-                    {
-                        state = 3;
-                    }
-                }
-
-                cmd_vel_pub_->publish(cmd_vel);
-
-            } catch (const tf2::TransformException & ex) {
-                RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
-                                     "TF error: %s", ex.what());
-            }
-
-            rate.sleep();
-        }
-
-        cmd_vel_pub_->publish(geometry_msgs::msg::Twist());
-
-        result->success = true;
-        result->message = "Goal reached";
-        goal_handle->succeed(result);
-    }
-};
-
-} // namespace
 
 RCLCPP_COMPONENTS_REGISTER_NODE(navigation_action::NavigationServer)

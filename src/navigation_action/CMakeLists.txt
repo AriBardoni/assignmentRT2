@@ -26,26 +26,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 ament_export_dependencies(rosidl_default_runtime)
 
 # ===============================
-# ROBOT BROADCASTER
-# ===============================
-add_library(robot_broadcaster_component SHARED
-  src/robot_broadcaster.cpp
-)
-
-ament_target_dependencies(robot_broadcaster_component
-  rclcpp
-  rclcpp_components
-  tf2_ros
-  geometry_msgs
-  nav_msgs
-)
-
-rclcpp_components_register_node(robot_broadcaster_component
-  PLUGIN "navigation_action::RobotBroadcaster"
-  EXECUTABLE robot_broadcaster_exe
-)
-
-# ===============================
 # ACTION SERVER
 # ===============================
 add_library(navigation_server_component SHARED
@@ -56,15 +36,16 @@ ament_target_dependencies(navigation_server_component
   rclcpp
   rclcpp_action
   rclcpp_components
+  geometry_msgs
+  nav_msgs
   tf2
   tf2_ros
   tf2_geometry_msgs
-  geometry_msgs
 )
 
 # collega action generata
-rosidl_target_interfaces(navigation_server_component
-  ${PROJECT_NAME} "rosidl_typesupport_cpp"
+target_link_libraries(navigation_server_component
+  ${PROJECT_NAME}__rosidl_typesupport_cpp
 )
 
 rclcpp_components_register_node(navigation_server_component
@@ -84,17 +65,17 @@ ament_target_dependencies(navigation_ui_client
   rclcpp_action
 )
 
-rosidl_target_interfaces(navigation_ui_client
-  ${PROJECT_NAME} "rosidl_typesupport_cpp"
+target_link_libraries(navigation_ui_client
+  ${PROJECT_NAME}__rosidl_typesupport_cpp
 )
 
 # ===============================
 # INSTALL
 # ===============================
 install(TARGETS
-  robot_broadcaster_component
   navigation_server_component
   navigation_ui_client
+  navigation_server_exe
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
