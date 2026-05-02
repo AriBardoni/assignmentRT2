@@ -5,7 +5,7 @@ from launch_ros.descriptions import ComposableNode
 def generate_launch_description():
     container = ComposableNodeContainer(
         name='navigation_container',
-        namespace='',  # <-- OBBLIGATORIO anche se vuoto
+        namespace='', 
         package='rclcpp_components',
         executable='component_container_mt',
         output='screen',
